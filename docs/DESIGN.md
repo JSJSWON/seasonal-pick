@@ -1,0 +1,550 @@
+# seasonal-pick 설계 문서
+
+최초 작성 2026-10-25 · 개발 진행에 따라 계속 갱신
+
+---
+
+## 1. 서비스
+
+### 1.1 해결하려는 문제
+
+장을 볼 때 재료의 **절대 가격만** 보고 판단하게 된다. 과거에 얼마였는지 모르니
+"오이 5개 1000원"이 싼 건지 알 수 없고, 할인율 20%가 실제로 싼 건지도 모른다.
+제철 여부도 찾아보지 않으면 모른다.
+
+이 서비스는 두 가지에 답한다.
+
+1. **이 가격이 평소보다 싼가, 비싼가** — 계산해서 제공
+2. **지금이 맛있는 시기인가** — 별도 정보로 제공
+
+### 1.2 두 축은 독립이다
+
+**제철(맛)과 가격(돈)은 서로 다른 축이며, 가격에서 제철을 유도할 수 없다.**
+저장 물량이 풀려 싼 시기가 맛있는 시기는 아니고, 제철 초입에는 맛이 절정인데
+물량이 적어 비쌀 수 있다.
+
+|            | 싸다 ○            | 싸다 ✕                  |
+| ---------- | ----------------- | ----------------------- |
+| **제철 ○** | 지금 사라 (목표)  | 맛은 좋을 때, 값은 비쌈 |
+| **제철 ✕** | 저장품·수입. 주의 | 살 이유 없음            |
+
+가격만 보여주는 서비스는 사용자를 왼쪽 아래 칸으로 밀어넣는다. 두 축을 함께
+보여주는 것이 이 서비스의 존재 이유다.
+
+### 1.3 MVP 범위
+
+**가격 추세 하나**를 제대로 만든다. 제철·보관법·조리법은 그 다음이다.
+
+- 부류별 1개씩 6품목
+- 지역 선택 (전 지역 수집)
+- 월별 추세선 + 현재 가격 위치 + 평년 대비 판정
+
+### 1.4 MVP 대상 품목
+
+부류 6개를 모두 건드려 스키마의 일반성을 검증하는 것이 선정 기준이다.
+
+| 부류          | 품목       | 코드      | 품종                                  | 등급        |
+| ------------- | ---------- | --------- | ------------------------------------- | ----------- |
+| 100 식량작물  | 쌀         | `111`     | `01` 20kg                             | `04` 상품   |
+| 200 채소류    | 배추       | `211`     | `01` 봄 `02` 여름 `03` 가을 `06` 월동 | `04` 상품   |
+| 300 특용작물  | 새송이버섯 | `317`     | `00` 새송이버섯                       | `04` 상품   |
+| 400 과일류    | 복숭아     | `413`     | `01` 백도                             | `04` 상품   |
+| 500 축산물    | 닭고기     | `515`     | `02` 도계                             | `05` 중품   |
+| 600 수산물    | 김         | `641`     | `00` 마른김                           | `05` 중품   |
+
+**등급이 품목마다 다르다.** `04 상품`이 닭고기·김에는 없다. 전역 상수로 등급을
+고정하면 그 품목들의 수집 결과가 0건이 된다.
+
+쌀 품종 `01`(20kg)과 `05`(20kg 햅쌀)는 별개이며 햅쌀은 가을 한정이다. 연중
+추세를 보려면 `01`을 쓴다.
+
+---
+
+## 2. 시스템 구성
+
+```
+[Next.js]  화면 · 그래프                      web/
+    │ HTTP (JSON)
+    ▼
+[ASP.NET Core Web API]  조회 + 판정 로직       api/
+    │
+    ▼
+[PostgreSQL]  가격 이력 · 마스터
+    ▲
+    │
+[수집 워커]  공공데이터 API → DB               collector/
+```
+
+**원칙: 수집과 조회를 분리한다.** 사용자 요청이 외부 API를 직접 호출하지 않는다.
+외부 API는 일일 호출 한도가 있고 잔여량을 조회할 수단이 없다.
+
+DB의 역할은 "없는 데이터를 만드는 것"이 아니라 **시간축을 만드는 것**이다.
+사용하는 API는 조회일 기준 값만 주므로, 매일 쌓지 않으면 추세선을 그릴 수 없다.
+
+수집 워커는 .NET Worker Service로 만든다. API와 한 솔루션에 두고 프로젝트를 나눈다.
+
+---
+
+## 3. 데이터 소스
+
+### 3.1 사용 API — 2개
+
+| API                                | 역할                           | 범위                       | 주기                        |
+| ---------------------------------- | ------------------------------ | -------------------------- | --------------------------- |
+| **연월별 도·소매가격정보 조회**    | 평년값 · 산포 · 월별 추세      | 전 지역 · 5년 · `se_cd=01` | 월 1회                      |
+| **지역별 품목별 도·소매가격정보 조회** | 일별 현재가 · 최저~최고       | 전 지역 · 1년 · `se_cd=01` | 매일 + 최근 2~3주 재동기화 |
+
+판정의 근거는 **연월별** 하나에서 나온다. 지역별 품목별은 현재 상태 표시용이다.
+
+둘 다 `cond[필드::GTE/LTE]` 형태의 기간 조회를 지원하고, 2020년 데이터가 있으며,
+응답에 `totalCount`를 제공한다. 백필과 페이징 루프가 성립한다.
+
+**두 API의 코드 체계는 동일하다** (코드표 6개 파일이 바이트 단위로 같음).
+
+### 3.2 확인된 API 특성
+
+실제 응답을 보고 확인한 사실만 적는다. 설계가 이 사실들에 의존한다.
+
+**(가) 환산가격 공식**
+
+```
+cnvs_*_prc = *_prc / unit_sz    (단위는 unit, 반올림)
+
+ 47,500 / 20 = 2,375      201,143 / 40 = 5,029
+118,000 / 40 = 2,950      155,000 / 35 = 4,429
+```
+
+`unit`은 품목마다 다르다(쌀 kg, 배추 포기). **aT가 kg 환산을 해주므로 품목 간
+비교가 가능하다.** 포기→kg은 우리가 무게를 모르면 불가능하다.
+
+**(나) 과거 날짜 데이터가 나중에 등록된다**
+
+| 조사일 | 등록 시점   | 지연  |
+| ------ | ----------- | ----- |
+| 10/01  | 10/01 15:16 | 당일  |
+| 10/06  | 10/13 16:11 | 7일   |
+| 10/08  | 10/13 16:31 | 5일   |
+| 10/22  | 10/22 15:06 | 당일  |
+
+**"빈 날짜만 채우기"로는 부족하다.** 10/7에 수집했다면 10/6을 "조사 없음"으로
+잘못 확정했을 것이다. 최근 구간을 매번 다시 받아 덮어써야 한다.
+
+당일 데이터는 15시 전후에 등록되므로 수집은 밤에 돌린다.
+
+**(다) 조사는 평일만 이뤄진다**
+
+2026년 10월 서울·쌀 조사일을 전수 확인한 결과 토·일이 0건이고, 평일 중
+**10/5(개천절 대체공휴일)과 10/9(한글날)만** 빠졌다.
+
+**(라) 품종이 계절에만 존재한다**
+
+조회 범위를 9월부터 줘도 "20kg(햅쌀)"은 10월부터 데이터가 나오고, 가을배추는
+11월부터 나온다. 품종이 아예 없는 기간이 몇 달씩 이어진다.
+
+**(마) 등급코드는 전역에서 유효하지 않다**
+
+```
+등급코드 "1"  →  1++등급 · 삼겹살 · 갈비 · 미국산 · 일반란 · 육계(kg) · …  (12가지)
+"M과"         →  14, 15, 25 세 코드
+"01" = 1등급  ≠  "1" = 1++등급
+```
+
+`grd_cd` 단독으로는 의미가 없고 **(품목, 품종, 등급) 복합으로만** 해석된다.
+그리고 `"01"`과 `"1"`이 다른 등급이므로 **정수로 변환하면 데이터가 섞인다.**
+
+**(바) 품목코드 길이가 고정이 아니다** — 3자리 129개, 4자리 7개(`4301 소`, `9901 닭` 등)
+
+**(사) 시군구코드에 두 계층이 섞여 있다**
+
+```
+광역  3100 경기 · 3201 강원 · 3300 충북 · 3400 충남 · 3500 전북 · 3600 전남 · 3700 경북 · 3800 경남
+시    3111 수원 · 3112 성남 · 3113 의정부 · 3138 고양 · 3145 용인 · …
+특수  9998 온라인 · 1000 전국(축산부류한정)
+```
+
+**경기(3100)와 수원(3111)을 합산하면 중복이다.** 지역 선택 UI에서 계층을 구분해야
+한다. `9998 온라인`은 성격이 달라 일반 지역 목록에 섞지 않는다.
+
+**(아) 친환경은 구분코드로도 분리된다**
+
+`se_cd`는 `01 소매 / 02 중도매 / 03 친환경농산물 / 07 친환경농산물(신규)`이다.
+표고버섯은 등급이 유기농·무농약뿐이고 **소매(`01`)에 데이터가 없다.** 그래서
+MVP 품목에서 새송이버섯으로 교체했다. `se_cd`도 품목별로 지정 가능해야 한다.
+
+### 3.3 코드 체계
+
+```
+부류(6) → 품목(136) → 품종(332) → 등급(693)
+```
+
+참조 정합성을 전수 검사했고 고아 행이 없다. 외래키를 그대로 걸 수 있다.
+
+코드표는 `collector/seed/codes/*.csv`에 영문명으로 두고, 포털에서 받은 원본
+xlsx는 `collector/seed/reference/`에 원래 이름으로 보존한다.
+
+---
+
+## 4. 데이터 모델
+
+### 4.1 설계 원칙
+
+1. **응답 필드는 전부 저장한다.** 필드가 20개 미만이고 저장 비용이 사실상 없다.
+   일부만 골라 저장하는 것이 오히려 추가 작업이고, 나중에 한 필드가 필요해지면
+   스키마 변경·재수집·검증을 다시 해야 한다. 명칭(`item_nm` 등)도 그 시점의 기록으로
+   남긴다.
+2. **원본을 가공하지 않고 적재하고, 집계·판정은 별도 레이어에서 한다.** 평균만
+   남기고 버리면 지역별·등급별 분석이 필요해질 때 5년치를 다시 받아야 한다.
+3. **모든 코드는 문자열로 저장한다.** 선행 0이 의미를 가진다.
+4. **가격은 integer(원)로 저장한다.** 소수점이 없다.
+5. **수집 범위는 좁게 시작한다.** 품목은 나중에 백필이 가능하다.
+
+위 원칙의 근거는 "복원 불가"가 아니라 **재수집 비용**이다. 사용하는 두 API는 모두
+기간 조회를 지원하고 2020년 데이터가 있으므로 가격 자체는 다시 받을 수 있다. 과거를
+정말 복원할 수 없는 것은 4주치만 제공하는 출하량 API뿐이며 9장에 적었다.
+
+### 4.2 스키마
+
+```sql
+-- ============================================================
+-- Master tables, seeded from collector/seed/codes/*.csv
+-- All codes are text: leading zeros are significant ("01" != "1").
+-- ============================================================
+
+CREATE TABLE trade_types (          -- 01 retail / 02 wholesale / 03,07 eco
+    se_cd text PRIMARY KEY,
+    se_nm text NOT NULL
+);
+
+CREATE TABLE categories (
+    ctgry_cd text PRIMARY KEY,
+    ctgry_nm text NOT NULL
+);
+
+CREATE TABLE items (
+    ctgry_cd text NOT NULL REFERENCES categories (ctgry_cd),
+    item_cd  text NOT NULL,         -- 3 or 4 characters; do not assume a width
+    item_nm  text NOT NULL,
+    PRIMARY KEY (ctgry_cd, item_cd)
+);
+
+CREATE TABLE varieties (
+    ctgry_cd text NOT NULL,
+    item_cd  text NOT NULL,
+    vrty_cd  text NOT NULL,         -- meaning differs per category:
+    vrty_nm  text NOT NULL,         -- size (rice), season (cabbage), origin (bean)
+    PRIMARY KEY (ctgry_cd, item_cd, vrty_cd),
+    FOREIGN KEY (ctgry_cd, item_cd) REFERENCES items (ctgry_cd, item_cd)
+);
+
+-- A grade code only has meaning inside one (category, item, variety).
+CREATE TABLE grades (
+    ctgry_cd text NOT NULL,
+    item_cd  text NOT NULL,
+    vrty_cd  text NOT NULL,
+    grd_cd   text NOT NULL,
+    grd_nm   text NOT NULL,
+    PRIMARY KEY (ctgry_cd, item_cd, vrty_cd, grd_cd),
+    FOREIGN KEY (ctgry_cd, item_cd, vrty_cd)
+        REFERENCES varieties (ctgry_cd, item_cd, vrty_cd)
+);
+
+-- Regions mix administrative levels, so summing across levels double-counts.
+-- `level` is set by hand when seeding; the source table does not carry it.
+CREATE TABLE regions (
+    sgg_cd text PRIMARY KEY,
+    sgg_nm text NOT NULL,
+    level  text NOT NULL            -- metro | province | city | special
+);
+
+-- ============================================================
+-- What the collector fetches and the UI offers.
+-- Adding an item is a data change, not a code change.
+-- Grade and trade type are per target: "04" is missing for some items,
+-- and eco-only items have no rows under retail.
+-- ============================================================
+
+CREATE TABLE tracked_targets (
+    id         serial PRIMARY KEY,
+    ctgry_cd   text NOT NULL,
+    item_cd    text NOT NULL,
+    vrty_cd    text NOT NULL,
+    grd_cd     text NOT NULL,
+    se_cd      text NOT NULL REFERENCES trade_types (se_cd),
+    display_nm text NOT NULL,       -- what the UI shows, e.g. "배추 (가을)"
+    is_active  boolean NOT NULL DEFAULT true,
+    UNIQUE (ctgry_cd, item_cd, vrty_cd, grd_cd, se_cd),
+    FOREIGN KEY (ctgry_cd, item_cd, vrty_cd, grd_cd)
+        REFERENCES grades (ctgry_cd, item_cd, vrty_cd, grd_cd)
+);
+
+-- ============================================================
+-- Prices. Both tables are aggregated by region by aT: there is no
+-- market dimension, so market-mix changes cannot distort a trend line.
+-- ============================================================
+
+-- Source: 지역별 품목별 도·소매가격정보 조회
+CREATE TABLE price_daily (
+    exmn_ymd     date NOT NULL,
+    se_cd        text NOT NULL,
+    ctgry_cd     text NOT NULL,
+    item_cd      text NOT NULL,
+    vrty_cd      text NOT NULL,
+    grd_cd       text NOT NULL,
+    sgg_cd       text NOT NULL,
+    unit         text NOT NULL,
+    unit_sz      numeric NOT NULL,
+    min_prc      integer,
+    avg_prc      integer,
+    max_prc      integer,
+    cnvs_min_prc integer,           -- per `unit`, divided by unit_sz by aT
+    cnvs_avg_prc integer,
+    cnvs_max_prc integer,
+    collected_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (exmn_ymd, se_cd, ctgry_cd, item_cd, vrty_cd, grd_cd, sgg_cd)
+);
+
+-- Source: 연월별 도·소매가격정보 조회
+-- Carries dispersion stats, which is why it drives the verdict.
+CREATE TABLE price_monthly (
+    exmn_ym      char(6) NOT NULL,  -- YYYYMM
+    se_cd        text NOT NULL,
+    ctgry_cd     text NOT NULL,
+    item_cd      text NOT NULL,
+    vrty_cd      text NOT NULL,
+    grd_cd       text NOT NULL,
+    sgg_cd       text NOT NULL,
+    unit         text NOT NULL,
+    unit_sz      numeric NOT NULL,
+    m_avg_prc    integer,
+    m_max_prc    integer,
+    m_min_prc    integer,
+    m_stddev     numeric,
+    m_cv         numeric,           -- coefficient of variation
+    m_amplitude  numeric,
+    y_avg_prc    integer,
+    y_max_prc    integer,
+    y_min_prc    integer,
+    y_stddev     numeric,
+    y_cv         numeric,
+    y_amplitude  numeric,
+    orgnl_reg_dt timestamptz,
+    collected_at timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (exmn_ym, se_cd, ctgry_cd, item_cd, vrty_cd, grd_cd, sgg_cd)
+);
+
+-- ============================================================
+-- Collection bookkeeping
+-- ============================================================
+
+-- Records why a period produced no rows, so the collector never retries
+-- a date that was never surveyed, and so API call usage stays visible.
+CREATE TABLE collection_log (
+    id          serial PRIMARY KEY,
+    source      text NOT NULL,      -- daily | monthly
+    target_id   integer REFERENCES tracked_targets (id),
+    period_from date NOT NULL,
+    period_to   date NOT NULL,
+    status      text NOT NULL,      -- ok | no_survey | out_of_season | failed
+    row_count   integer NOT NULL DEFAULT 0,
+    api_calls   integer NOT NULL DEFAULT 0,
+    message     text,
+    ran_at      timestamptz NOT NULL DEFAULT now()
+);
+
+-- ============================================================
+-- Editorial content. Not derived from price data.
+-- ============================================================
+
+-- Peak-taste season. Independent of price; always carries a source,
+-- including "generated by AI" when that is where it came from.
+CREATE TABLE item_seasons (
+    ctgry_cd        text NOT NULL,
+    item_cd         text NOT NULL,
+    vrty_cd         text NOT NULL,
+    peak_from_month smallint,       -- 1-12, NULL when year-round
+    peak_to_month   smallint,       -- may wrap: 11 -> 4
+    is_year_round   boolean NOT NULL DEFAULT false,
+    source          text NOT NULL,
+    note            text,
+    PRIMARY KEY (ctgry_cd, item_cd, vrty_cd),
+    FOREIGN KEY (ctgry_cd, item_cd, vrty_cd)
+        REFERENCES varieties (ctgry_cd, item_cd, vrty_cd)
+);
+
+CREATE TABLE item_contents (        -- storage, recipes, tips
+    id           serial PRIMARY KEY,
+    ctgry_cd     text NOT NULL,
+    item_cd      text NOT NULL,
+    vrty_cd      text NOT NULL,
+    content_type text NOT NULL,     -- storage | recipe | tip
+    body         text NOT NULL,
+    source       text NOT NULL,
+    FOREIGN KEY (ctgry_cd, item_cd, vrty_cd)
+        REFERENCES varieties (ctgry_cd, item_cd, vrty_cd)
+);
+```
+
+`is_year_round`가 필요한 이유는 닭고기다. MVP 6품목 중 제철 개념이 없는 유일한
+품목이다(쌀은 햅쌀, 새송이는 약하지만 존재, 김은 겨울~봄).
+
+---
+
+## 5. 수집기
+
+### 5.1 동작
+
+```
+연월별  (월 1회)
+  tracked_targets × regions × 60개월 → UPSERT price_monthly
+
+지역별 품목별  (매일 밤)
+  ① 재동기화: 최근 3주를 조건 없이 다시 받아 UPSERT
+  ② 백필    : collection_log에 ok/no_survey/out_of_season이 없는 과거 날짜를 채움
+```
+
+**멱등성이 핵심이다.** `PRIMARY KEY` + `ON CONFLICT DO UPDATE`로 같은 기간을 몇 번
+받아도 중복이 생기지 않는다. 이 성질 덕분에 PC가 며칠 꺼져 있어도 켜질 때
+따라잡을 수 있고, 클라우드 없이 로컬에서 운영할 수 있다.
+
+### 5.2 "데이터 없음"의 세 가지
+
+구분하지 않으면 수집기가 같은 날짜를 영원히 재시도한다.
+
+| status          | 뜻                          | 재시도             |
+| --------------- | --------------------------- | ------------------ |
+| `no_survey`     | 주말·공휴일                 | 안 함              |
+| `out_of_season` | 그 품종이 시장에 없는 기간  | 안 함 (다음 해 재개) |
+| `failed`        | 호출 실패·한도 초과         | 함                 |
+
+공휴일 달력은 두지 않는다. **응답이 비면 `no_survey`로 기록하고 넘어가는 정책**으로
+충분하다. 단, (나)에 따라 재동기화 구간 안에서는 다시 확인한다.
+
+### 5.3 호출 관리
+
+일일 한도는 10,000건이고 **잔여량을 조회할 수단이 없다.** `collection_log.api_calls`에
+호출 수를 기록해 자체 카운터로 관리한다. 기록하지 않으면 한도 초과로 수집이
+실패한 사실조차 모르게 된다.
+
+연월별 백필 규모 추정: 수집 대상 9개(품종 단위) × 지역 38 × 60개월 ≈ 2만 행.
+페이지당 1000건이면 20여 회. 실제 규모는 1단계에서 `totalCount`로 측정한다.
+
+---
+
+## 6. 판정 로직
+
+### 6.1 기준: 과거 같은 시기 대비
+
+```
+baseline = 과거 N년(기본 5년) 같은 월의 m_avg_prc 평균
+sigma    = 같은 기간의 m_stddev 평균
+current  = 선택 지역의 최근 조사일 avg_prc
+
+z = (current - baseline) / sigma
+```
+
+**연평균 대비가 아니라 같은 월 대비여야 한다.** 딸기는 겨울에 싸고 여름에 비싼 게
+정상인데, 연평균과 비교하면 여름 내내 "비싸다"고 표시된다. 그건 정보가 아니다.
+
+### 6.2 표준편차를 쓰는 이유
+
+`-18%`라는 숫자만으로는 그게 많이 싼 건지 알 수 없다. 배추는 20% 변동이 평범하고
+쌀은 5%만 움직여도 큰 사건이다. **품목마다 "정상 범위"가 다르고, `m_stddev`가 그
+차이를 흡수한다.**
+
+| z            | 표시                     |
+| ------------ | ------------------------ |
+| ≤ -1.0       | 평년보다 뚜렷하게 싸다   |
+| -1.0 ~ -0.3  | 평년보다 조금 싸다       |
+| -0.3 ~ 0.3   | 평년 수준                |
+| 0.3 ~ 1.0    | 평년보다 조금 비싸다     |
+| ≥ 1.0        | 평년보다 뚜렷하게 비싸다 |
+
+경계값은 실제 데이터를 보고 조정한다. `sigma`가 0이거나 NULL이면 z를 쓸 수 없으니
+퍼센트 비교로 대체한다 (7-① 참고).
+
+### 6.3 전국 평균은 만들지 않는다
+
+지역별 단순평균은 전국 평균이 아니다. 서울과 안동이 같은 비중을 받고, 어떤 달에
+한 지역이 조사에서 빠지면 가격이 안 변했는데도 "전국 평균"이 움직인다.
+**사용자가 지역을 직접 고르므로 합칠 일이 없다.** 기본 지역은 서울(`1101`).
+
+---
+
+## 7. 미결 사항
+
+확인하지 않은 것은 추측하지 않고 여기 모아둔다.
+
+| #  | 확인할 것                                             | 영향                                    | 시점   |
+| -- | ----------------------------------------------------- | --------------------------------------- | ------ |
+| ①  | 소매에서 `min`/`avg`/`max`가 실제로 달라지는가         | "최저~최고 범위" 표시 가능 여부, z 계산 | 1단계  |
+| ②  | 새송이버섯이 `se_cd=01`에 데이터가 있는가              | 품목 교체 필요 여부                     | 1단계  |
+| ③  | 광역코드(`3100` 경기 등)에 실제 데이터가 있는가        | 지역 목록 구성                          | 1단계  |
+| ④  | `515 닭고기` vs `9901 닭` 중 소매 데이터가 어디인가    | 닭고기 대상 확정                        | 1단계  |
+| ⑤  | 쌀 품종 `01`(20kg)에 연중 데이터가 있는가              | 쌀 대상 확정                            | 1단계  |
+| ⑥  | 품목별 조사 주기 (쌀만 평일 조사로 확인됨)             | 백필 구멍 판정                          | 1단계  |
+| ⑦  | 배추 품종 릴레이를 화면에서 어떻게 이을 것인가         | 아래 참고                               | 4단계  |
+| ⑧  | 축산물 등급코드가 응답에서 `"1"`인가 `"01"`인가        | 소·돼지 추가 시                         | 나중   |
+
+**⑦ 배추 품종 릴레이** — 봄·여름(고랭지)·가을·월동이 시간순으로 이어진다.
+사용자는 "가을배추값"이 아니라 "배추값"을 보고 싶을 수 있지만, 품종을 이어붙이면
+교체 시점에 가격이 점프한다(서로 다른 작물이므로). 품종별 선을 따로 그리고
+화면에서 "지금 시장에 있는 품종"을 자동 선택하는 쪽이 정직하다. 스키마는 품종별
+저장이라 어느 방식이든 수용한다.
+
+---
+
+## 8. 로드맵
+
+| 단계 | 할 일                                                      | 완료 기준                       |
+| ---- | ---------------------------------------------------------- | ------------------------------- |
+| 0    | 이 설계 문서                                               | 합의 완료                       |
+| 1    | PostgreSQL 스키마 + 코드표 seed 적재 + 연월별 5년 백필 (C#) | DB에 5년치 월별 데이터가 있음   |
+| 2    | 지역별 품목별 일별 수집 + 재동기화                         | 매일 자동으로 쌓임              |
+| 3    | 조회 API (`GET /api/targets/{id}/prices`)                  | Rider에서 JSON 확인             |
+| 4    | Next.js 화면 — 월별 추세선, 지역 선택                      | 브라우저에서 추세선이 보임      |
+| 5    | 판정 지표 표시                                             | "평년보다 뚜렷하게 싸다" 표시   |
+| 6    | 제철 정보 입력 및 표시                                     | 두 축이 함께 보임               |
+| 7    | 확장 — 품목 추가, 보관·조리, 시장별 세부, 전국 구획, 출하량 | —                               |
+
+**1단계를 C#으로, 화면 없이 시작한다.** 가장 익숙한 언어로 가장 중요한 자산인
+데이터를 먼저 확보하고, 익숙하지 않은 TypeScript는 4단계로 미룬다. 학습 부담이
+둘로 나뉜다.
+
+`web/`에는 초기 프로토타입을 옮겨둔 `temp/`가 있다. 참고용이며, 4단계에서 새로
+작성한다.
+
+---
+
+## 9. 검토했으나 쓰지 않는 것
+
+나중에 같은 고민을 반복하지 않기 위해 이유를 남긴다.
+
+| 대상                        | 이유                                                                       |
+| --------------------------- | -------------------------------------------------------------------------- |
+| **기간별 소매가격 조회**    | 시장별 원천. 조사 시장 구성이 시간에 따라 변해 **단순 평균이 가짜 추세를 만든다** (아래). 시장별 세부가 필요해지면 7단계에서 추가 |
+| **일별 도·소매 가격정보**   | 같은 이유(`mrkt_cd` 포함). 지역별 품목별이 같은 역할을 집계된 형태로 제공  |
+| **최근일자 도·소매가격정보** | 지역 구분이 없어 지역 선택과 축이 맞지 않는다. 1일/1주/1개월/1년 전 비교는 우리가 쌓은 데이터로 계산 가능 |
+| **가격 등락 정보**          | 등락률은 파생값. 원값을 저장하면 언제든 계산되지만 역은 불가              |
+| **가격 추이 정보**          | 조회일 기준 1~4주 전만 제공. 장기 비교 불가                                |
+| **출하량 추이 정보**        | 분류 체계가 가격 API와 다르고(상품대/중/소분류) 매핑 비용이 크다. 4주치만 주므로 **과거 백필이 불가능**하다는 점은 기록해 둔다 |
+| **도매시장 계열 전부**      | 경매·정산·경매원천·중도매인·산지공판장. 소매가와 유통 단계가 다름           |
+| **전국 평균 직접 계산**     | 6-③ 참고                                                                   |
+
+**시장 구성 변동이 만드는 가짜 추세** — 2026년 10월 서울 쌀(햅쌀) 소매 원천을
+보면, 조사 시장이 1곳에서 5곳으로 늘어난다.
+
+```
+10/01  B`-유통만 (69,000원)                  평균 3,450원/kg
+10/08  + B-유통 (61,900원)                   평균 3,272원/kg   ▼5%
+10/22  + I-유통 · 경동 · 복조리              평균 3,285원/kg
+```
+
+평균선이 5% 떨어지지만 **B`-유통은 전 기간 69,000원에서 1원도 움직이지 않았고
+B-유통도 61,900원 고정이다.** 가격 변동이 아니라 모집단 변동이다. "평소보다 싸다"를
+말하는 서비스가 이것을 가격 변화로 오인해 보여주면 서비스 자체가 거짓이 된다.
+
+같은 날 서울 배추 가을 상품이 A-유통 1,930원 / B-유통 3,600원 / 양동(광주)
+5,000원으로 **2.6배 차이**가 난다. 섞어서 평균내면 의미가 없다.
+
+**그래서 시군구 단위로 집계된 API를 쓴다.** aT가 자기 방법론으로 처리한 결과를
+받고, 우리는 통계를 직접 설계하지 않는다.
