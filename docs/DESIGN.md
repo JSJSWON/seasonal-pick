@@ -204,157 +204,34 @@ xlsx는 `collector/seed/reference/`에 원래 이름으로 보존한다.
 
 ### 4.2 스키마
 
+**구현된 스키마의 정본은 `collector/sql/001_schema.sql`이다.** 이 문서에 DDL을
+중복해 적지 않는다 — 두 곳에 두면 반드시 어긋난다. 각 컬럼을 그렇게 정한 이유는
+그 파일의 주석에 있다.
+
+| 테이블 | 담는 것 |
+| --- | --- |
+| `trade_types` `categories` `items` `varieties` `grades` `regions` | aT 코드 체계. `collector/seed/codes/*.csv`에서 적재 |
+| `tracked_targets` | 수집·표시 대상. 품목 추가가 코드 수정이 아니라 행 추가가 된다 |
+| `price_daily` | 일별 지역 가격 (지역별 품목별 API) |
+| `price_monthly` | 월·연 집계와 산포. 판정의 근거 (연월별 API) |
+| `collection_log` | 수집 결과와 호출 수. "데이터 없음"의 세 가지를 구분 |
+
+SQL 파일에 주석으로 담기 어려운 판단 둘을 여기 남긴다.
+
+**가격 테이블에는 마스터로 가는 외래키를 걸지 않는다.** aT가 코드표보다 먼저 새
+품종이나 등급을 내보낼 수 있고, 외래키가 있으면 그 행이 거부되어 관측값을 잃는다.
+설계 원칙 1번과 직접 충돌한다. 대신 "가격에는 있는데 마스터에 없는 코드"를 찾는
+검증 쿼리로 잡는다. `tracked_targets`는 우리가 직접 고른 목록이라 외래키를 건다.
+
+**코드값 열거에는 `enum` 타입 대신 `text` + `CHECK`를 쓴다.** PostgreSQL에서
+enum은 값을 더하거나 빼는 작업이 번거롭다. 외부 코드 체계는 변할 수 있다.
+
+### 4.3 아직 만들지 않은 테이블
+
+제철·보관·조리 콘텐츠는 6단계에서 다룬다. 지금 테이블만 만들어두면 몇 주간 비어
+있고, 그때 실제 데이터 형태를 보고 정하는 쪽이 낫다. 설계는 아래로 열어둔다.
+
 ```sql
--- ============================================================
--- Master tables, seeded from collector/seed/codes/*.csv
--- All codes are text: leading zeros are significant ("01" != "1").
--- ============================================================
-
-CREATE TABLE trade_types (          -- 01 retail / 02 wholesale / 03,07 eco
-    se_cd text PRIMARY KEY,
-    se_nm text NOT NULL
-);
-
-CREATE TABLE categories (
-    ctgry_cd text PRIMARY KEY,
-    ctgry_nm text NOT NULL
-);
-
-CREATE TABLE items (
-    ctgry_cd text NOT NULL REFERENCES categories (ctgry_cd),
-    item_cd  text NOT NULL,         -- 3 or 4 characters; do not assume a width
-    item_nm  text NOT NULL,
-    PRIMARY KEY (ctgry_cd, item_cd)
-);
-
-CREATE TABLE varieties (
-    ctgry_cd text NOT NULL,
-    item_cd  text NOT NULL,
-    vrty_cd  text NOT NULL,         -- meaning differs per category:
-    vrty_nm  text NOT NULL,         -- size (rice), season (cabbage), origin (bean)
-    PRIMARY KEY (ctgry_cd, item_cd, vrty_cd),
-    FOREIGN KEY (ctgry_cd, item_cd) REFERENCES items (ctgry_cd, item_cd)
-);
-
--- A grade code only has meaning inside one (category, item, variety).
-CREATE TABLE grades (
-    ctgry_cd text NOT NULL,
-    item_cd  text NOT NULL,
-    vrty_cd  text NOT NULL,
-    grd_cd   text NOT NULL,
-    grd_nm   text NOT NULL,
-    PRIMARY KEY (ctgry_cd, item_cd, vrty_cd, grd_cd),
-    FOREIGN KEY (ctgry_cd, item_cd, vrty_cd)
-        REFERENCES varieties (ctgry_cd, item_cd, vrty_cd)
-);
-
--- Regions mix administrative levels, so summing across levels double-counts.
--- `level` is set by hand when seeding; the source table does not carry it.
-CREATE TABLE regions (
-    sgg_cd text PRIMARY KEY,
-    sgg_nm text NOT NULL,
-    level  text NOT NULL            -- metro | province | city | special
-);
-
--- ============================================================
--- What the collector fetches and the UI offers.
--- Adding an item is a data change, not a code change.
--- Grade and trade type are per target: "04" is missing for some items,
--- and eco-only items have no rows under retail.
--- ============================================================
-
-CREATE TABLE tracked_targets (
-    id         serial PRIMARY KEY,
-    ctgry_cd   text NOT NULL,
-    item_cd    text NOT NULL,
-    vrty_cd    text NOT NULL,
-    grd_cd     text NOT NULL,
-    se_cd      text NOT NULL REFERENCES trade_types (se_cd),
-    display_nm text NOT NULL,       -- what the UI shows, e.g. "배추 (가을)"
-    is_active  boolean NOT NULL DEFAULT true,
-    UNIQUE (ctgry_cd, item_cd, vrty_cd, grd_cd, se_cd),
-    FOREIGN KEY (ctgry_cd, item_cd, vrty_cd, grd_cd)
-        REFERENCES grades (ctgry_cd, item_cd, vrty_cd, grd_cd)
-);
-
--- ============================================================
--- Prices. Both tables are aggregated by region by aT: there is no
--- market dimension, so market-mix changes cannot distort a trend line.
--- ============================================================
-
--- Source: 지역별 품목별 도·소매가격정보 조회
-CREATE TABLE price_daily (
-    exmn_ymd     date NOT NULL,
-    se_cd        text NOT NULL,
-    ctgry_cd     text NOT NULL,
-    item_cd      text NOT NULL,
-    vrty_cd      text NOT NULL,
-    grd_cd       text NOT NULL,
-    sgg_cd       text NOT NULL,
-    unit         text NOT NULL,
-    unit_sz      numeric NOT NULL,
-    min_prc      integer,
-    avg_prc      integer,
-    max_prc      integer,
-    cnvs_min_prc integer,           -- per `unit`, divided by unit_sz by aT
-    cnvs_avg_prc integer,
-    cnvs_max_prc integer,
-    collected_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (exmn_ymd, se_cd, ctgry_cd, item_cd, vrty_cd, grd_cd, sgg_cd)
-);
-
--- Source: 연월별 도·소매가격정보 조회
--- Carries dispersion stats, which is why it drives the verdict.
-CREATE TABLE price_monthly (
-    exmn_ym      char(6) NOT NULL,  -- YYYYMM
-    se_cd        text NOT NULL,
-    ctgry_cd     text NOT NULL,
-    item_cd      text NOT NULL,
-    vrty_cd      text NOT NULL,
-    grd_cd       text NOT NULL,
-    sgg_cd       text NOT NULL,
-    unit         text NOT NULL,
-    unit_sz      numeric NOT NULL,
-    m_avg_prc    integer,
-    m_max_prc    integer,
-    m_min_prc    integer,
-    m_stddev     numeric,
-    m_cv         numeric,           -- coefficient of variation
-    m_amplitude  numeric,
-    y_avg_prc    integer,
-    y_max_prc    integer,
-    y_min_prc    integer,
-    y_stddev     numeric,
-    y_cv         numeric,
-    y_amplitude  numeric,
-    orgnl_reg_dt timestamptz,
-    collected_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (exmn_ym, se_cd, ctgry_cd, item_cd, vrty_cd, grd_cd, sgg_cd)
-);
-
--- ============================================================
--- Collection bookkeeping
--- ============================================================
-
--- Records why a period produced no rows, so the collector never retries
--- a date that was never surveyed, and so API call usage stays visible.
-CREATE TABLE collection_log (
-    id          serial PRIMARY KEY,
-    source      text NOT NULL,      -- daily | monthly
-    target_id   integer REFERENCES tracked_targets (id),
-    period_from date NOT NULL,
-    period_to   date NOT NULL,
-    status      text NOT NULL,      -- ok | no_survey | out_of_season | failed
-    row_count   integer NOT NULL DEFAULT 0,
-    api_calls   integer NOT NULL DEFAULT 0,
-    message     text,
-    ran_at      timestamptz NOT NULL DEFAULT now()
-);
-
--- ============================================================
--- Editorial content. Not derived from price data.
--- ============================================================
-
 -- Peak-taste season. Independent of price; always carries a source,
 -- including "generated by AI" when that is where it came from.
 CREATE TABLE item_seasons (
@@ -386,8 +263,6 @@ CREATE TABLE item_contents (        -- storage, recipes, tips
 
 `is_year_round`가 필요한 이유는 닭고기다. MVP 6품목 중 제철 개념이 없는 유일한
 품목이다(쌀은 햅쌀, 새송이는 약하지만 존재, 김은 겨울~봄).
-
----
 
 ## 5. 수집기
 
