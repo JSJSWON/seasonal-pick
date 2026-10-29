@@ -132,45 +132,17 @@ CREATE TABLE price_daily (
     PRIMARY KEY (exmn_ymd, se_cd, ctgry_cd, item_cd, vrty_cd, grd_cd, sgg_cd)
 );
 
--- Source: 연월별 도·소매가격정보 조회 (monthly and yearly aggregates)
---
--- The dispersion columns are what let a verdict be stated in terms of a
--- normal range rather than a bare percentage: 20% is unremarkable for
--- cabbage and a large move for rice.
-CREATE TABLE price_monthly (
-    exmn_ym      char(6) NOT NULL CHECK (exmn_ym ~ '^[0-9]{6}$'),
-    se_cd        text NOT NULL,
-    ctgry_cd     text NOT NULL,
-    item_cd      text NOT NULL,
-    vrty_cd      text NOT NULL,
-    grd_cd       text NOT NULL,
-    sgg_cd       text NOT NULL,
-    unit         text NOT NULL,
-    unit_sz      numeric NOT NULL,
-    m_avg_prc    integer,
-    m_max_prc    integer,
-    m_min_prc    integer,
-    m_stddev     numeric,
-    m_cv         numeric,
-    m_amplitude  numeric,
-    y_avg_prc    integer,
-    y_max_prc    integer,
-    y_min_prc    integer,
-    y_stddev     numeric,
-    y_cv         numeric,
-    y_amplitude  numeric,
-    orgnl_reg_dt timestamptz,
-    collected_at timestamptz NOT NULL DEFAULT now(),
-    PRIMARY KEY (exmn_ym, se_cd, ctgry_cd, item_cd, vrty_cd, grd_cd, sgg_cd)
-);
+-- There is no monthly table. Monthly figures are derived from the rows
+-- above: aT's own monthly average equals the simple mean of the daily
+-- averages, its monthly high and low are their max and min, and its monthly
+-- standard deviation matches the population standard deviation of them once
+-- rounded. Keeping a second table would mean storing the same fact twice,
+-- and the two would eventually disagree.
 
 -- The primary key leads with the period, which suits a date range but not
 -- the main query: one target in one region over time.
 CREATE INDEX ix_price_daily_target
     ON price_daily (ctgry_cd, item_cd, vrty_cd, grd_cd, se_cd, sgg_cd, exmn_ymd);
-
-CREATE INDEX ix_price_monthly_target
-    ON price_monthly (ctgry_cd, item_cd, vrty_cd, grd_cd, se_cd, sgg_cd, exmn_ym);
 
 -- ============================================================
 -- Collection bookkeeping
@@ -180,12 +152,15 @@ CREATE INDEX ix_price_monthly_target
 -- that was never surveyed, and so API usage stays visible: the daily quota
 -- cannot be queried, and exceeding it fails a run silently otherwise.
 --
--- 'no_survey'     weekend or public holiday
+-- 'no_survey'     no survey on that date (weekday holidays included)
 -- 'out_of_season' the variety is not on the market in that period
 -- 'failed'        call error or quota exhausted; retried
+--
+-- `job` separates the one-off historical backfill from the nightly re-sync.
+-- It used to name the API; there is only one now.
 CREATE TABLE collection_log (
     id          serial PRIMARY KEY,
-    source      text NOT NULL CHECK (source IN ('daily', 'monthly')),
+    job         text NOT NULL CHECK (job IN ('backfill', 'resync')),
     target_id   integer REFERENCES tracked_targets (id),
     sgg_cd      text,
     period_from date NOT NULL,
@@ -200,6 +175,6 @@ CREATE TABLE collection_log (
 );
 
 CREATE INDEX ix_collection_log_lookup
-    ON collection_log (source, target_id, period_from, period_to);
+    ON collection_log (job, target_id, period_from, period_to);
 
 COMMIT;
