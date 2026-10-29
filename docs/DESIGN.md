@@ -721,6 +721,20 @@ User Secrets       aT 서비스 키. ~/.microsoft/usersecrets/<id>/ 에 있어 �
 `dotnet user-secrets set "At:ServiceKey" "<키>"`로 한다. 2단계의 `api/`도 같은
 방식을 쓰므로 두 프로젝트의 설정 읽는 법이 같아진다.
 
+### 5.4 설정
+
+`IConfiguration`으로 읽고, 공급자를 겹쳐 쌓는다. 뒤가 앞을 덮는다.
+
+```
+appsettings.json   공개 설정. 커밋한다 (At:BaseUrl 등)
+User Secrets       aT 서비스 키. ~/.microsoft/usersecrets/<id>/ 에 있어 리포지토리 밖이다
+환경변수           나중에 배포 환경에서 덮어쓸 자리 (별도 패키지 필요)
+```
+
+**키를 소스나 appsettings.json에 두지 않는다.** 등록은 프로젝트 폴더에서
+`dotnet user-secrets set "At:ServiceKey" "<키>"`로 한다. 3단계의 `api/`도 같은
+방식을 쓰므로 두 프로젝트의 설정 읽는 법이 같아진다.
+
 ---
 
 ## 6. 판정 로직
