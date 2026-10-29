@@ -19,10 +19,8 @@ BEGIN;
 -- Livestock itself is not gone: perRegion still serves 1,845 rows for Seoul
 -- over 2026-09..10, but under different item codes (4301 소, 4304 돼지,
 -- 4401/4402 수입육, 9901 닭, 9903 계란, 9908 우유). 9901 닭 / 99 육계(kg) has
--- run daily since mid-2022. What livestock has lost is the monthly series,
--- and the verdict's baseline comes from there, so a livestock target could
--- show a current price but never "cheaper than usual". That is the reason it
--- stays out of the MVP rather than being swapped for another code.
+-- run daily since mid-2022, and 006 makes it the livestock target. Only this
+-- combination is dead, not the category.
 UPDATE tracked_targets SET is_active = false
     WHERE (ctgry_cd, item_cd, vrty_cd, grd_cd, se_cd) = ('500', '515', '02', '05', '01');
 

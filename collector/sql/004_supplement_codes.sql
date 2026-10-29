@@ -20,6 +20,16 @@
 --
 -- Append-only. More codes will surface as other categories are collected;
 -- they go into a new numbered file, not into this one.
+--
+-- Two notes added after the fact:
+--   - the scan enumerated categories 100..600, taken from our own code table,
+--     so it could not find `800 식품`, which the table omits entirely. 007
+--     adds it. Enumerating from the code table cannot reveal what the code
+--     table is missing.
+--   - 36 of these 37 combinations were seen again in perRegion/price, the
+--     only API still in use. The exception is 600/663/01/30 (전어), which is
+--     sparse - 65 rows over five years - and did not fall in the sampled
+--     months.
 
 BEGIN;
 
