@@ -169,6 +169,41 @@ public sealed class PriceQueries
             reader.GetDecimal(5));
     }
 
+    /// <summary>
+    /// Every region that holds prices for at least one active target.
+    /// </summary>
+    /// <remarks>
+    /// The recommendation screen asks for a region before an item exists to
+    /// narrow by, so this is the union rather than one target's set. Regions
+    /// in the code tables that were never surveyed are left out.
+    /// </remarks>
+    public async Task<List<RegionSummary>> GetAllRegionsAsync(CancellationToken ct)
+    {
+        const string sql = """
+            SELECT p.sgg_cd, r.sgg_nm, max(p.exmn_ymd) AS latest
+                FROM price_daily p
+                JOIN tracked_targets t USING (ctgry_cd, item_cd, vrty_cd, grd_cd, se_cd)
+                JOIN regions r ON r.sgg_cd = p.sgg_cd
+                WHERE t.is_active
+                GROUP BY p.sgg_cd, r.sgg_nm
+                ORDER BY r.sgg_nm
+            """;
+
+        await using var connection = await _db.OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+
+        var regions = new List<RegionSummary>();
+        await using var reader = await command.ExecuteReaderAsync(ct);
+        while (await reader.ReadAsync(ct))
+        {
+            regions.Add(new RegionSummary(
+                reader.GetString(0), reader.GetString(1), reader.GetFieldValue<DateOnly>(2)));
+        }
+
+        return regions;
+    }
+
     /// <summary>Looks up a region's name, or null when the code is unknown.</summary>
     public async Task<RegionSummary?> FindRegionAsync(string regionCode, CancellationToken ct)
     {

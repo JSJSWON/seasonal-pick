@@ -17,10 +17,21 @@ export function formatUnit(unit: string, unitSize: number): string {
   return unitSize === 1 ? unit : `${unitSize}${unit}`;
 }
 
-/** Formats an ISO date as "10월 29일". */
+/**
+ * Formats a survey date, keeping the year when it is not the current one.
+ *
+ * The date is shown so a reader can judge how stale a region's data is, and
+ * dropping the year defeated that: 김해's last survey for summer cabbage is
+ * 2025-11-05 and read as "11월 5일" - a week away rather than a year old.
+ * Anything from an earlier year now says so.
+ */
 export function formatSurveyDate(isoDate: string): string {
-  const [, month, day] = isoDate.split("-");
-  return `${Number(month)}월 ${Number(day)}일`;
+  const [year, month, day] = isoDate.split("-");
+  const thisYear = String(new Date().getFullYear());
+
+  return year === thisYear
+    ? `${Number(month)}월 ${Number(day)}일`
+    : `${year}년 ${Number(month)}월 ${Number(day)}일`;
 }
 
 /** Formats a month key as "2026.10". */
