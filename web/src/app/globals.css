@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+/*
+ * Light theme only, on purpose.
+ *
+ * create-next-app ships a prefers-color-scheme block that flips the body to
+ * near-black. Because it sets `body { background: ... }` as a plain rule it
+ * also beats the utility class on <body>, which left white cards sitting on
+ * a black page. Dark mode is worth doing deliberately once there is a style
+ * guide to do it against (프로젝트 태스크 1), not half-done by boilerplate.
+ */
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Apple SD Gothic Neo",
+    "Malgun Gothic", "Noto Sans KR", sans-serif;
+}
+
+body {
+  font-family: var(--font-sans);
+}
