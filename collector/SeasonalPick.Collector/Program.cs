@@ -106,18 +106,34 @@ static RunOptions? ParseArguments(string[] args)
         {
             case "--from":
                 options.From = ParseDate(value);
-                if (options.From is null) return null;
+                if (options.From is null)
+                {
+                    return null;
+                }
+
                 break;
             case "--to":
                 options.To = ParseDate(value);
-                if (options.To is null) return null;
+                if (options.To is null)
+                {
+                    return null;
+                }
+
                 break;
             case "--days":
-                if (!int.TryParse(value, out var days) || days < 0) return null;
+                if (!int.TryParse(value, out var days) || days < 0)
+                {
+                    return null;
+                }
+
                 options.Days = days;
                 break;
             case "--target":
-                if (!int.TryParse(value, out var id)) return null;
+                if (!int.TryParse(value, out var id))
+                {
+                    return null;
+                }
+
                 options.TargetId = id;
                 break;
             case "--region":

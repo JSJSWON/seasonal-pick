@@ -1,0 +1,54 @@
+#!/bin/bash
+#
+# Blocks a commit whose staged files break formatting or lint rules.
+#
+# Lives in the repository rather than .git/hooks, which git does not track:
+# a hook there is invisible to the next machine. `git config core.hooksPath
+# .githooks` points git here, and setup.sh does that.
+#
+# Only the areas with staged changes are checked. Verifying everything would
+# add seconds to every commit for files nobody touched.
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+staged="$(git diff --cached --name-only --diff-filter=ACMR)"
+[ -z "$staged" ] && exit 0
+
+failed=0
+
+check_dotnet_project() {
+    local path="$1" label="$2"
+    if ! echo "$staged" | grep -q "^$path/.*\.cs$"; then
+        return
+    fi
+
+    echo "포매팅 검사: $label"
+    if ! (cd "$path" && dotnet format --verify-no-changes --verbosity quiet); then
+        echo "  고치려면: cd $path && dotnet format" >&2
+        failed=1
+    fi
+}
+
+check_dotnet_project "collector/SeasonalPick.Collector" "수집기"
+check_dotnet_project "api/SeasonalPick.Api" "조회 API"
+
+if echo "$staged" | grep -qE '^web/src/.*\.(ts|tsx)$'; then
+    echo "린트 검사: web"
+    if ! (cd web && npx --no-install eslint src); then
+        failed=1
+    fi
+    echo "타입 검사: web"
+    if ! (cd web && npx --no-install tsc --noEmit); then
+        failed=1
+    fi
+fi
+
+if [ "$failed" -ne 0 ]; then
+    echo >&2
+    echo "커밋을 중단했습니다. 급하면 --no-verify로 건너뛸 수 있습니다." >&2
+    exit 1
+fi
+
+exit 0
