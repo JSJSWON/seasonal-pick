@@ -21,6 +21,8 @@ builder.Services.AddSingleton(
 builder.Services.AddSingleton(
     builder.Configuration.GetSection("Recommendation").Get<RecommendationOptions>()
     ?? new RecommendationOptions());
+builder.Services.AddSingleton(
+    builder.Configuration.GetSection("Staleness").Get<StalenessOptions>() ?? new StalenessOptions());
 builder.Services.AddSingleton<RecommendationService>();
 
 builder.Services.ConfigureHttpJsonOptions(options =>
@@ -38,6 +40,10 @@ app.MapGet("/api/targets", async (PriceQueries queries, CancellationToken ct) =>
 // something to offer before an item has been chosen.
 app.MapGet("/api/regions", async (PriceQueries queries, CancellationToken ct) =>
     await queries.GetAllRegionsAsync(ct));
+
+// When the collector last ran successfully, shown once on every screen.
+app.MapGet("/api/status", async (PriceQueries queries, CancellationToken ct) =>
+    await queries.GetCollectionStatusAsync(ct));
 
 app.MapGet("/api/recommendations", async (
     string region,
@@ -70,6 +76,7 @@ app.MapGet("/api/targets/{id:int}/prices", async (
     string region,
     PriceQueries queries,
     VerdictOptions verdictOptions,
+    StalenessOptions stalenessOptions,
     CancellationToken ct) =>
 {
     var target = await queries.FindTargetAsync(id, ct);
@@ -97,7 +104,11 @@ app.MapGet("/api/targets/{id:int}/prices", async (
         verdict = VerdictCalculator.Evaluate(monthly, currentMonth, currentPrice, verdictOptions);
     }
 
-    return Results.Ok(new PriceDetail(target, regionSummary, latest, monthly, verdict));
+    int? staleDays = latest is null
+        ? null
+        : stalenessOptions.StaleDays(latest.Date, DateOnly.FromDateTime(DateTime.Now));
+
+    return Results.Ok(new PriceDetail(target, regionSummary, latest, monthly, verdict, staleDays));
 });
 
 app.Run();

@@ -219,4 +219,24 @@ public sealed class PriceQueries
             ? new RegionSummary(reader.GetString(0), reader.GetString(1))
             : null;
     }
+
+    /// <summary>
+    /// When the collector last finished a call successfully.
+    /// </summary>
+    /// <remarks>
+    /// Failed rows are ignored: a run that only failed has not updated
+    /// anything, and saying otherwise would make the date a lie. It counts
+    /// runs, not new data, so it moves on days when aT had nothing to add.
+    /// </remarks>
+    public async Task<CollectionStatus> GetCollectionStatusAsync(CancellationToken ct)
+    {
+        const string sql = "SELECT max(ran_at) FROM collection_log WHERE status = 'ok'";
+
+        await using var connection = await _db.OpenAsync(ct);
+        await using var command = connection.CreateCommand();
+        command.CommandText = sql;
+
+        var result = await command.ExecuteScalarAsync(ct);
+        return new CollectionStatus(result is DateTime ranAt ? new DateTimeOffset(ranAt) : null);
+    }
 }
