@@ -1,10 +1,9 @@
 import Link from "next/link";
 import { ApiUnavailable, Shell } from "@/components/Shell";
-import { Picker, type PickerOption } from "@/components/Picker";
+import { RegionSelect } from "@/components/RegionSelect";
 import { PriceSummary } from "@/components/PriceSummary";
 import { TrendChart } from "@/components/TrendChart";
 import { getPrices, getRegions, getTargets } from "@/lib/api";
-import { formatSurveyDate } from "@/lib/format";
 
 export const instant = false;
 
@@ -48,14 +47,6 @@ export default async function ItemDetail({
     regions.find((r) => r.code === "1101") ??
     regions[0];
 
-  const regionOptions: PickerOption[] = regions.map((r) => ({
-    key: r.code,
-    href: `/items/${targetId}?region=${r.code}`,
-    label: r.name,
-    note: r.latestDate ? `${formatSurveyDate(r.latestDate)}까지` : undefined,
-    selected: r.code === selectedRegion?.code,
-  }));
-
   let detail = null;
   if (selectedRegion) {
     try {
@@ -67,6 +58,13 @@ export default async function ItemDetail({
 
   return (
     <Shell>
+      <Link
+        href={selectedRegion ? `/?region=${selectedRegion.code}` : "/"}
+        className="mb-4 inline-block text-sm text-emerald-700 hover:underline"
+      >
+        ← 추천 목록
+      </Link>
+
       <div className="mb-6">
         <p className="text-sm text-neutral-500">{target.categoryName}</p>
         <h2 className="text-xl font-semibold text-neutral-900">
@@ -74,15 +72,23 @@ export default async function ItemDetail({
         </h2>
       </div>
 
-      {regionOptions.length > 0 ? (
-        <Picker legend="지역" options={regionOptions} />
+      {selectedRegion ? (
+        <RegionSelect
+          basePath={`/items/${targetId}`}
+          options={regions}
+          selectedCode={selectedRegion.code}
+        />
       ) : (
         <p className="text-neutral-600">이 품목은 조사된 지역이 없습니다.</p>
       )}
 
       {detail && (
         <div className="mt-8 space-y-8">
-          <PriceSummary latest={detail.latest} verdict={detail.verdict} />
+          <PriceSummary
+            latest={detail.latest}
+            verdict={detail.verdict}
+            staleDays={detail.staleDays}
+          />
           <section>
             <h2 className="mb-3 text-sm font-medium text-neutral-500">
               월평균 추이

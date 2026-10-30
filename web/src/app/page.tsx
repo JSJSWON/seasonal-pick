@@ -1,5 +1,6 @@
 import { ApiUnavailable, Shell } from "@/components/Shell";
 import { Picker, type PickerOption } from "@/components/Picker";
+import { RegionSelect } from "@/components/RegionSelect";
 import { RecommendationCard } from "@/components/RecommendationCard";
 import { getAllRegions, getRecommendations, getTargets } from "@/lib/api";
 import { formatSurveyDate } from "@/lib/format";
@@ -45,14 +46,6 @@ export default async function Home({
     regions.find((r) => r.code === "1101") ??
     regions[0];
 
-  const regionOptions: PickerOption[] = regions.map((r) => ({
-    key: r.code,
-    href: `/?region=${r.code}`,
-    label: r.name,
-    note: r.latestDate ? `${formatSurveyDate(r.latestDate)}까지` : undefined,
-    selected: r.code === selectedRegion.code,
-  }));
-
   let list;
   let targets;
   try {
@@ -75,7 +68,11 @@ export default async function Home({
 
   return (
     <Shell>
-      <Picker legend="지역" options={regionOptions} />
+      <RegionSelect
+        basePath="/"
+        options={regions}
+        selectedCode={selectedRegion.code}
+      />
 
       <section className="mt-8">
         <h2 className="mb-1 text-lg font-semibold text-neutral-900">

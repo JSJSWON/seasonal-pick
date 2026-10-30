@@ -7,14 +7,17 @@ import { formatPrice, formatSurveyDate, formatUnit } from "@/lib/format";
  * The survey date is shown next to the price rather than implied, because it
  * is routinely not today: aT does not survey weekends or holidays and
  * registers some dates days late. Showing "10월 29일 기준" is honest where
- * showing a bare price would not be.
+ * showing a bare price would not be. When the survey is a month or more old
+ * the price is not current at all, so that is said outright.
  */
 export function PriceSummary({
   latest,
   verdict,
+  staleDays,
 }: {
   latest?: LatestPrice;
   verdict?: Verdict;
+  staleDays?: number;
 }) {
   if (!latest || latest.avg === undefined) {
     return (
@@ -35,6 +38,11 @@ export function PriceSummary({
         <p className="text-sm text-neutral-500">
           {formatSurveyDate(latest.date)} 기준
         </p>
+        {staleDays !== undefined && (
+          <p className="mt-1 text-sm font-medium text-amber-700">
+            {staleDays}일 동안 가격이 갱신되지 않았어요
+          </p>
+        )}
         <p className="mt-1 text-3xl font-semibold tracking-tight text-neutral-900">
           {formatPrice(latest.avg)}
           <span className="ml-1 text-base font-normal text-neutral-500">

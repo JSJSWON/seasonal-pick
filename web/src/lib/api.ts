@@ -93,6 +93,14 @@ export type PriceDetail = {
   latest?: LatestPrice;
   monthly: MonthlyAverage[];
   verdict?: Verdict;
+  /** Days since the latest survey, present only when old enough to warn about. */
+  staleDays?: number;
+};
+
+/** What the collector has done. */
+export type CollectionStatus = {
+  /** When the most recent successful collection ran, as an ISO timestamp. */
+  lastCollectedAt?: string;
 };
 
 const API_BASE_URL = process.env.API_BASE_URL ?? "http://localhost:5215";
@@ -115,6 +123,11 @@ async function fetchJson<T>(path: string): Promise<T> {
   }
 
   return (await response.json()) as T;
+}
+
+/** When the collector last ran successfully. */
+export function getCollectionStatus(): Promise<CollectionStatus> {
+  return fetchJson<CollectionStatus>("/api/status");
 }
 
 /** All active targets, in the order the API returns them. */

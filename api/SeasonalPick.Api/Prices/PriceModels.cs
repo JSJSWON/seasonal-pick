@@ -48,9 +48,20 @@ public sealed record LatestPrice(
 /// <param name="Latest">Latest surveyed price, or null when there is none.</param>
 /// <param name="Monthly">Monthly series for the trend line, oldest first.</param>
 /// <param name="Verdict">How the latest price compares with past years.</param>
+/// <param name="StaleDays">
+/// Days since the latest survey when that is long enough to warn about, or
+/// null when the price is recent enough.
+/// </param>
 public sealed record PriceDetail(
     TargetSummary Target,
     RegionSummary Region,
     LatestPrice? Latest,
     IReadOnlyList<MonthlyAverage> Monthly,
-    Verdict? Verdict);
+    Verdict? Verdict,
+    int? StaleDays);
+
+/// <summary>What the collector has done, for the screen's "last updated" line.</summary>
+/// <param name="LastCollectedAt">
+/// When the most recent successful collection ran, or null if none has.
+/// </param>
+public sealed record CollectionStatus(DateTimeOffset? LastCollectedAt);
