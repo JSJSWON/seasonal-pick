@@ -1,3 +1,6 @@
+"use client";
+
+import { useState } from "react";
 import type { MonthlyAverage } from "@/lib/api";
 import { formatMonth, formatPrice } from "@/lib/format";
 
@@ -39,12 +42,17 @@ function splitIntoRuns(monthly: MonthlyAverage[]): MonthlyAverage[][] {
 /**
  * Monthly average prices over time, with the most recent month marked.
  *
- * Inline SVG rather than a charting library: one line and one point is little
- * enough that a dependency would cost more than it saves, and what the chart
- * should eventually show is not settled. Axes, tooltips or zoom would be the
- * moment to pick one.
+ * Inline SVG rather than a charting library: one line, one point and a hover
+ * readout is little enough that a dependency would cost more than it saves.
+ * Zoom or several series would be the moment to pick one.
+ *
+ * A client component only for the hover readout. The pointer snaps to the
+ * nearest month that has data, so a gap in a seasonal item's series never
+ * shows a value that was not surveyed.
  */
 export function TrendChart({ monthly }: { monthly: MonthlyAverage[] }) {
+  const [hovered, setHovered] = useState<MonthlyAverage | null>(null);
+
   if (monthly.length < 2) {
     return (
       <p className="text-sm text-neutral-500">
@@ -78,6 +86,29 @@ export function TrendChart({ monthly }: { monthly: MonthlyAverage[] }) {
   const runs = splitIntoRuns(monthly);
   const last = monthly[monthly.length - 1];
 
+  /** Picks the month nearest the pointer, converting screen pixels to SVG units. */
+  const handlePointerMove = (event: React.PointerEvent<SVGSVGElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = ((event.clientX - rect.left) * width) / rect.width;
+
+    let nearest = monthly[0];
+    for (const point of monthly) {
+      if (Math.abs(xOf(point.month) - x) < Math.abs(xOf(nearest.month) - x)) {
+        nearest = point;
+      }
+    }
+    setHovered(nearest);
+  };
+
+  const readout = hovered
+    ? `${formatMonth(hovered.month)} · ${formatPrice(Math.round(hovered.average))}`
+    : "";
+  // Roughly 7px per character at this font size; the label flips to the left
+  // of the point when it would run past the plot's right edge.
+  const readoutWidth = readout.length * 7 + 16;
+  const readoutOnLeft =
+    hovered !== null && xOf(hovered.month) + 12 + readoutWidth > width - padding.right;
+
   // Ticks come from the time range, not from the data, so a year with no
   // January still gets its label in the right place.
   const firstYear = Number(monthly[0].month.slice(0, 4));
@@ -94,7 +125,9 @@ export function TrendChart({ monthly }: { monthly: MonthlyAverage[] }) {
     <figure className="w-full">
       <svg
         viewBox={`0 0 ${width} ${height}`}
-        className="h-auto w-full"
+        className="h-auto w-full touch-pan-y"
+        onPointerMove={handlePointerMove}
+        onPointerLeave={() => setHovered(null)}
         role="img"
         aria-label={`${formatMonth(monthly[0].month)}부터 ${formatMonth(
           last.month,
@@ -172,6 +205,50 @@ export function TrendChart({ monthly }: { monthly: MonthlyAverage[] }) {
           r={4}
           className="fill-emerald-700"
         />
+
+        {hovered && (
+          <g pointerEvents="none">
+            <line
+              x1={xOf(hovered.month)}
+              y1={padding.top}
+              x2={xOf(hovered.month)}
+              y2={padding.top + plotHeight}
+              className="stroke-neutral-400"
+              strokeDasharray="3 3"
+              strokeWidth={1}
+            />
+            <circle
+              cx={xOf(hovered.month)}
+              cy={yOf(hovered.average)}
+              r={5}
+              className="fill-emerald-600 stroke-white"
+              strokeWidth={2}
+            />
+            <rect
+              x={
+                readoutOnLeft
+                  ? xOf(hovered.month) - 12 - readoutWidth
+                  : xOf(hovered.month) + 12
+              }
+              y={Math.max(2, yOf(hovered.average) - 32)}
+              width={readoutWidth}
+              height={24}
+              rx={6}
+              className="fill-white stroke-neutral-300"
+            />
+            <text
+              x={
+                readoutOnLeft
+                  ? xOf(hovered.month) - 12 - readoutWidth + 8
+                  : xOf(hovered.month) + 12 + 8
+              }
+              y={Math.max(2, yOf(hovered.average) - 32) + 16}
+              className="fill-neutral-900 text-[12px]"
+            >
+              {readout}
+            </text>
+          </g>
+        )}
       </svg>
       <figcaption className="mt-2 text-sm text-neutral-500">
         {formatMonth(monthly[0].month)} ~ {formatMonth(last.month)} 월평균 · 총{" "}

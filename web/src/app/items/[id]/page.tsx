@@ -58,6 +58,13 @@ export default async function ItemDetail({
 
   return (
     <Shell>
+      <Link
+        href={selectedRegion ? `/?region=${selectedRegion.code}` : "/"}
+        className="mb-4 inline-block text-sm text-emerald-700 hover:underline"
+      >
+        ← 추천 목록
+      </Link>
+
       <div className="mb-6">
         <p className="text-sm text-neutral-500">{target.categoryName}</p>
         <h2 className="text-xl font-semibold text-neutral-900">
