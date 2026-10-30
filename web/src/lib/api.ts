@@ -59,7 +59,31 @@ export type Verdict = {
   baseline?: number;
   sigma?: number;
   z?: number;
+  /**
+   * How far the price is from the baseline, as a percentage.
+   *
+   * Shown next to the verdict because z on its own misleads. A stable item
+   * reaches "clearly cheaper" on a 20% drop while cabbage needs 35%, which
+   * is the point of using z - but the reader deserves to see what the claim
+   * amounts to in money.
+   */
+  differencePercent?: number;
   label: string;
+};
+
+/** One entry in the "cheap right now" list. */
+export type Recommendation = {
+  target: TargetSummary;
+  latest: LatestPrice;
+  verdict: Verdict;
+};
+
+/** What is unusually cheap in one region right now. */
+export type RecommendationList = {
+  region: RegionSummary;
+  /** The region's most recent survey date - what "right now" means here. */
+  asOf?: string;
+  items: Recommendation[];
 };
 
 /** Everything one screen needs for one target in one region. */
@@ -101,6 +125,18 @@ export function getTargets(): Promise<TargetSummary[]> {
 /** The regions this target has prices for. */
 export function getRegions(targetId: number): Promise<RegionSummary[]> {
   return fetchJson<RegionSummary[]>(`/api/targets/${targetId}/regions`);
+}
+
+/** Every region the service holds prices for, for the recommendation screen. */
+export function getAllRegions(): Promise<RegionSummary[]> {
+  return fetchJson<RegionSummary[]>("/api/regions");
+}
+
+/** The cheapest-against-their-own-normal targets in one region. */
+export function getRecommendations(regionCode: string): Promise<RecommendationList> {
+  return fetchJson<RecommendationList>(
+    `/api/recommendations?region=${encodeURIComponent(regionCode)}`,
+  );
 }
 
 /** Trend, latest price and verdict for one target in one region. */

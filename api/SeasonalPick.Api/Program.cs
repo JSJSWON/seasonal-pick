@@ -18,6 +18,10 @@ builder.Services.AddSingleton(new Database(
 builder.Services.AddSingleton<PriceQueries>();
 builder.Services.AddSingleton(
     builder.Configuration.GetSection("Verdict").Get<VerdictOptions>() ?? new VerdictOptions());
+builder.Services.AddSingleton(
+    builder.Configuration.GetSection("Recommendation").Get<RecommendationOptions>()
+    ?? new RecommendationOptions());
+builder.Services.AddSingleton<RecommendationService>();
 
 builder.Services.ConfigureHttpJsonOptions(options =>
 {
@@ -29,6 +33,26 @@ var app = builder.Build();
 
 app.MapGet("/api/targets", async (PriceQueries queries, CancellationToken ct) =>
     await queries.GetTargetsAsync(ct));
+
+// Every region the service can answer for, so the recommendation screen has
+// something to offer before an item has been chosen.
+app.MapGet("/api/regions", async (PriceQueries queries, CancellationToken ct) =>
+    await queries.GetAllRegionsAsync(ct));
+
+app.MapGet("/api/recommendations", async (
+    string region,
+    PriceQueries queries,
+    RecommendationService recommendations,
+    CancellationToken ct) =>
+{
+    var regionSummary = await queries.FindRegionAsync(region, ct);
+    if (regionSummary is null)
+    {
+        return Results.NotFound(new { message = $"지역 코드 {region}을 찾을 수 없습니다." });
+    }
+
+    return Results.Ok(await recommendations.BuildAsync(regionSummary, ct));
+});
 
 app.MapGet("/api/targets/{id:int}/regions", async (
     int id, PriceQueries queries, CancellationToken ct) =>

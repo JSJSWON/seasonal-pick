@@ -9,6 +9,12 @@ namespace SeasonalPick.Api.Prices;
 /// <param name="Baseline">Mean of those monthly averages, in won.</param>
 /// <param name="Sigma">Population standard deviation of them, in won.</param>
 /// <param name="Z">(current - baseline) / sigma.</param>
+/// <param name="DifferencePercent">
+/// How far the current price is from the baseline, as a percentage.
+/// Carried alongside z because z alone can mislead: when past years were
+/// nearly identical, sigma is tiny and a 2% move scores above 10. The
+/// percentage lets a reader see what "clearly cheaper" actually amounts to.
+/// </param>
 /// <param name="Label">The sentence to show, or why no verdict was made.</param>
 public sealed record Verdict(
     bool Available,
@@ -16,6 +22,7 @@ public sealed record Verdict(
     int? Baseline,
     int? Sigma,
     double? Z,
+    double? DifferencePercent,
     string Label);
 
 /// <summary>
@@ -55,7 +62,7 @@ public static class VerdictCalculator
 
         if (sameMonth.Count < options.MinimumSampleSize)
         {
-            return new Verdict(false, sameMonth.Count, null, null, null,
+            return new Verdict(false, sameMonth.Count, null, null, null, null,
                 $"과거 같은 달 표본이 {sameMonth.Count}개뿐이라 평년과 비교하지 않았습니다");
         }
 
@@ -66,7 +73,7 @@ public static class VerdictCalculator
         if (sigma <= 0)
         {
             return new Verdict(false, sameMonth.Count,
-                (int)Math.Round(baseline), 0, null,
+                (int)Math.Round(baseline), 0, null, null,
                 "과거 같은 달 가격이 모두 같아 비교할 폭이 없습니다");
         }
 
@@ -77,6 +84,7 @@ public static class VerdictCalculator
             (int)Math.Round(baseline),
             (int)Math.Round(sigma),
             Math.Round(z, 2),
+            Math.Round((currentPrice - baseline) / baseline * 100, 1),
             LabelFor(z, options));
     }
 

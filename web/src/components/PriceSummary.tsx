@@ -56,8 +56,12 @@ export function PriceSummary({
               {verdict.label}
             </p>
             <p className="mt-2 text-sm text-neutral-600">
-              평년값 {formatPrice(verdict.baseline!)} · 표본{" "}
-              {verdict.sampleSize}년 · z {verdict.z}
+              평년값 {formatPrice(verdict.baseline!)}
+              {verdict.differencePercent !== undefined &&
+                ` · 평년 대비 ${verdict.differencePercent}%`}
+            </p>
+            <p className="mt-1 text-xs text-neutral-500">
+              과거 같은 달 {verdict.sampleSize}년 · z {verdict.z}
             </p>
           </>
         ) : (

@@ -5,15 +5,25 @@ namespace SeasonalPick.Api.Prices;
 /// </summary>
 /// <remarks>
 /// These come from appsettings.json rather than being constants, because they
-/// are provisional. They were cut from the distribution of 6,795 cells that
-/// have at least five samples, not taken from statistical convention:
-/// |z| &lt; 0.5 covers 27% of cells, 0.5..1.35 covers 53%, and 1.35 and above
-/// covers 19%. The usual ±1 / ±2 bands do not apply here because |z| is
-/// bounded by sqrt(n-1) when the standard deviation is computed over the same
-/// n points - with seven years of history |z| cannot exceed 2.45.
+/// are provisional. They are cut from the measured distribution rather than
+/// taken from statistical convention: across the 1,537 cells with at least
+/// five past samples, |z| under 0.5 covers 20%, 0.5..2.3 covers 60%, and 2.3
+/// and above covers 20%.
 ///
-/// Only six items are collected so far. The numbers will want revisiting once
-/// more are, which is why they live in configuration.
+/// The first cut of these numbers was wrong, and the mistake is worth
+/// recording. It was measured by scoring each month against a group that
+/// included that month, which bounds |z| at sqrt(n-1) - about 2.45 for seven
+/// years. The verdict does the opposite, comparing the current month against
+/// past years only, which has no such bound; values past 90 appear when the
+/// past years were nearly identical. Thresholds taken from the bounded
+/// distribution called half of everything "clearly", so they were re-cut
+/// against the distribution the verdict actually produces.
+///
+/// The usual ±1 / ±2 bands do not apply either way: they assume a large
+/// sample, and this one is six or seven years.
+///
+/// Only six items are collected so far, so the numbers will want revisiting
+/// as more arrive.
 /// </remarks>
 public sealed class VerdictOptions
 {
@@ -33,5 +43,5 @@ public sealed class VerdictOptions
     public double SlightThreshold { get; init; } = 0.5;
 
     /// <summary>At or above this |z| the difference is called clear.</summary>
-    public double StrongThreshold { get; init; } = 1.35;
+    public double StrongThreshold { get; init; } = 2.3;
 }
