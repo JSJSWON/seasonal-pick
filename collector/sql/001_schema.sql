@@ -148,13 +148,17 @@ CREATE INDEX ix_price_daily_target
 -- Collection bookkeeping
 -- ============================================================
 
--- Why a period produced no rows, so the collector does not retry a date
--- that was never surveyed, and so API usage stays visible: the daily quota
--- cannot be queried, and exceeding it fails a run silently otherwise.
+-- One row per run of one (target, region, period): what was asked for, what
+-- came back, and how many calls it cost. API usage has to stay visible
+-- because the daily quota cannot be queried, and exceeding it would
+-- otherwise fail a run silently.
 --
--- 'no_survey'     no survey on that date (weekday holidays included)
--- 'out_of_season' the variety is not on the market in that period
--- 'failed'        call error or quota exhausted; retried
+-- 'ok'      the call succeeded. row_count may be 0 - that is a fact, not a
+--           diagnosis. Why a period is empty (weekend, holiday, the variety
+--           being out of season) is derived from price_daily afterwards: a
+--           date that other targets have is a date that was surveyed. The
+--           collector does not guess at call time.
+-- 'failed'  call error or quota exhausted
 --
 -- `job` separates the one-off historical backfill from the nightly re-sync.
 -- It used to name the API; there is only one now.
@@ -165,8 +169,7 @@ CREATE TABLE collection_log (
     sgg_cd      text,
     period_from date NOT NULL,
     period_to   date NOT NULL,
-    status      text NOT NULL
-                CHECK (status IN ('ok', 'no_survey', 'out_of_season', 'failed')),
+    status      text NOT NULL CHECK (status IN ('ok', 'failed')),
     row_count   integer NOT NULL DEFAULT 0,
     api_calls   integer NOT NULL DEFAULT 0,
     message     text,
