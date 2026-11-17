@@ -9,8 +9,9 @@ namespace SeasonalPick.Collector.Jobs;
 /// <param name="Calls">HTTP calls spent.</param>
 /// <param name="Failures">Combinations that ended in 'failed'.</param>
 /// <param name="StoppedOnQuota">True when the daily call limit ended the run early.</param>
+/// <param name="Aborted">True when a failure outside one combination ended the run early.</param>
 public sealed record RunSummary(
-    int Pairs, int RowsWritten, int Calls, int Failures, bool StoppedOnQuota);
+    int Pairs, int RowsWritten, int Calls, int Failures, bool StoppedOnQuota, bool Aborted);
 
 /// <summary>
 /// Walks active targets against regions for a date range and stores what
@@ -83,66 +84,81 @@ public sealed class CollectJob
         var calls = 0;
         var failures = 0;
 
-        foreach (var target in targets)
+        // Only the per-combination failure is handled inside the loop, and even
+        // that handler writes to collection_log - so a database that dies
+        // mid-run takes the handler with it. Catching here cannot save the run,
+        // and should not try: with the database gone every later combination
+        // would fail too, spending an API call each time against a daily quota.
+        // What it does save is the summary line, which is the one thing the
+        // November deaths cost us - 18 days of believing nothing had failed.
+        try
         {
-            var regions = job == "backfill"
-                ? await _regions.GetAllAsync(ct)
-                : await _regions.GetRegionsWithDataAsync(target, ct);
-
-            if (onlyRegionCode is not null)
+            foreach (var target in targets)
             {
-                regions = regions.Where(r => r == onlyRegionCode).ToList();
-            }
+                var regions = job == "backfill"
+                    ? await _regions.GetAllAsync(ct)
+                    : await _regions.GetRegionsWithDataAsync(target, ct);
 
-            var targetRows = 0;
-            var targetRegionsWithData = 0;
-
-            foreach (var region in regions)
-            {
-                if (callsUsed + calls >= _dailyCallLimit)
+                if (onlyRegionCode is not null)
                 {
-                    Console.WriteLine($"  호출 한도 {_dailyCallLimit} 도달. 중단합니다.");
-                    return new RunSummary(pairs, rowsWritten, calls, failures, true);
+                    regions = regions.Where(r => r == onlyRegionCode).ToList();
                 }
 
-                pairs++;
-                try
+                var targetRows = 0;
+                var targetRegionsWithData = 0;
+
+                foreach (var region in regions)
                 {
-                    var result = await _api.FetchAsync(target.Codes, region, from, to, ct);
-                    calls += result.Calls;
-                    var written = await _prices.UpsertAsync(result.Rows, ct);
-                    rowsWritten += written;
-                    targetRows += written;
-                    if (written > 0)
+                    if (callsUsed + calls >= _dailyCallLimit)
                     {
-                        targetRegionsWithData++;
+                        Console.WriteLine($"  호출 한도 {_dailyCallLimit} 도달. 중단합니다.");
+                        return new RunSummary(pairs, rowsWritten, calls, failures, true, false);
                     }
 
-                    await _log.InsertAsync(job, target.Id, region, from, to,
-                        "ok", written, result.Calls, null, ct);
-                }
-                // Not `ex is not OperationCanceledException`, which was the
-                // first attempt and was exactly wrong: HttpClient.Timeout
-                // throws TaskCanceledException, a subclass of it, so a single
-                // timed-out request escaped and killed the whole run. The
-                // monthly backfill died that way on its first scheduled night
-                // and never completed. What distinguishes a real cancellation
-                // is the token, not the exception type.
-                catch (Exception ex) when (!ct.IsCancellationRequested)
-                {
-                    failures++;
-                    calls++;
-                    await _log.InsertAsync(job, target.Id, region, from, to,
-                        "failed", 0, 1, Truncate(ex.Message), ct);
-                    Console.WriteLine($"  실패 {target.DisplayName} / {region}: {ex.Message}");
-                }
-            }
+                    pairs++;
+                    try
+                    {
+                        var result = await _api.FetchAsync(target.Codes, region, from, to, ct);
+                        calls += result.Calls;
+                        var written = await _prices.UpsertAsync(result.Rows, ct);
+                        rowsWritten += written;
+                        targetRows += written;
+                        if (written > 0)
+                        {
+                            targetRegionsWithData++;
+                        }
 
-            Console.WriteLine($"  {target.DisplayName,-22} 지역 {targetRegionsWithData,2}/{regions.Count,2}  "
-                              + $"{targetRows,7:N0}행");
+                        await _log.InsertAsync(job, target.Id, region, from, to,
+                            "ok", written, result.Calls, null, ct);
+                    }
+                    // Not `ex is not OperationCanceledException`, which was the
+                    // first attempt and was exactly wrong: HttpClient.Timeout
+                    // throws TaskCanceledException, a subclass of it, so a single
+                    // timed-out request escaped and killed the whole run. The
+                    // monthly backfill died that way on its first scheduled night
+                    // and never completed. What distinguishes a real cancellation
+                    // is the token, not the exception type.
+                    catch (Exception ex) when (!ct.IsCancellationRequested)
+                    {
+                        failures++;
+                        calls++;
+                        await _log.InsertAsync(job, target.Id, region, from, to,
+                            "failed", 0, 1, Truncate(ex.Message), ct);
+                        Console.WriteLine($"  실패 {target.DisplayName} / {region}: {ex.Message}");
+                    }
+                }
+
+                Console.WriteLine($"  {target.DisplayName,-22} 지역 {targetRegionsWithData,2}/{regions.Count,2}  "
+                                  + $"{targetRows,7:N0}행");
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            Console.Error.WriteLine($"  수집을 중단합니다: {ex.GetType().Name}: {ex.Message}");
+            return new RunSummary(pairs, rowsWritten, calls, failures, false, true);
         }
 
-        return new RunSummary(pairs, rowsWritten, calls, failures, false);
+        return new RunSummary(pairs, rowsWritten, calls, failures, false, false);
     }
 
     /// <summary>Keeps a log message short enough to stay readable.</summary>

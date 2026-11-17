@@ -91,12 +91,12 @@ catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
 }
 catch (Exception ex)
 {
-    // Anything reaching here is outside the per-pair handling: reading the
-    // target list, the region list or the daily quota, or a failure of the
-    // log write inside the per-pair catch itself. There is no summary to
-    // print in that case; what matters is that the log file says why in one
-    // line instead of a stack trace nobody reads.
-    Console.Error.WriteLine($"수집이 중단되었습니다: {ex.GetType().Name}: {ex.Message}");
+    // What reaches here failed before collection began - reading the target
+    // list or the calls spent today. A failure once the loop is running is
+    // handled inside RunAsync, which returns the partial summary instead of
+    // throwing. So there is nothing to summarise here; what matters is that
+    // the log file says why in one line instead of a stack trace nobody reads.
+    Console.Error.WriteLine($"수집을 시작하지 못했습니다: {ex.GetType().Name}: {ex.Message}");
     return 2;
 }
 
@@ -105,6 +105,11 @@ var elapsed = DateTime.Now - startedAt;
 Console.WriteLine();
 Console.WriteLine($"조합 {summary.Pairs}  행 {summary.RowsWritten:N0}  호출 {summary.Calls}  "
                   + $"실패 {summary.Failures}  소요 {elapsed:hh\\:mm\\:ss}");
+
+if (summary.Aborted)
+{
+    return 2;
+}
 
 return summary.Failures > 0 || summary.StoppedOnQuota ? 1 : 0;
 
