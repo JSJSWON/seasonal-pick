@@ -788,6 +788,37 @@ collector/scripts/install-launchd.sh   plist 생성 + 등록. uninstall 인자�
 실측: `launchctl kickstart`로 돌린 재동기화가 **204 조합 · 1,476행 · 호출 204 ·
 실패 0 · 14초**였다. launchd의 빈 환경에서도 User Secrets를 읽는다.
 
+**예약된 실행은 두 번 조용히 죽었다**(2.5주간 방치한 뒤 로그에서 확인).
+
+```
+2026-11-01 03:05  backfill  TaskCanceledException (HttpClient.Timeout 60초)  미처리 종료
+2026-11-17 02:10  resync    Npgsql 연결 실패 (Database.OpenAsync)            미처리 종료
+```
+
+**원인 ① 예외 필터가 타임아웃만 정확히 비켜 갔다.** 대상별 `catch`가
+`ex is not OperationCanceledException`이었는데, `HttpClient.Timeout`이 던지는
+`TaskCanceledException`이 그 하위 타입이다. 호출 하나가 60초를 넘기면 그 조합만
+실패로 기록되고 넘어가야 하는데 전체 수집이 죽었다. 월 1회 백필은 **첫 예약 실행에서
+죽은 뒤 한 번도 완주하지 못했다.** 진짜 취소와 타임아웃을 구분하는 것은 예외 타입이
+아니라 **토큰**이므로 `!ct.IsCancellationRequested`로 바꿨다.
+
+**원인 ② DB가 아직 안 떠 있었다.** 02:00은 노트북이 깨어난 직후일 수 있고,
+대상 목록 조회는 대상별 `catch` 밖에 있다. 수집 시작 전에
+`Database.WaitUntilReadyAsync`로 **최대 30초(2→4→8초 백오프)** 기다린다.
+
+**`collection_log`는 자기가 죽은 걸 기록할 수 없다.** 18일간 실패 0건으로 보였고
+그동안 두 회차가 실제로는 죽어 있었다. 표에 없는 사실은 **실행 로그 파일에만** 있다.
+그래서 최상위에 `try/catch`를 두고 종료 코드로 구분한다.
+
+```
+0  정상        1  조합 단위 실패 있음 / 호출 한도 중단
+2  시작 못 함(DB·대상 목록 등)      130  사용자 중단
+```
+
+재현해서 확인했다 — DB 포트를 비워 두면 30.8초 뒤 한 줄과 `2`로 끝나고,
+`BaseUrl`을 응답 없는 주소로 두면 60초 × 4회 후 **그 조합만** `failed`로 기록되고
+수집은 계속된다(`조합 1 · 실패 1 · 소요 4분 12초 · 종료 1`).
+
 ### 5.6 설정
 
 `IConfiguration`으로 읽고, 공급자를 겹쳐 쌓는다. 뒤가 앞을 덮는다.

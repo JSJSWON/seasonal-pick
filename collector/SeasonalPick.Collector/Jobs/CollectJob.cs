@@ -121,7 +121,14 @@ public sealed class CollectJob
                     await _log.InsertAsync(job, target.Id, region, from, to,
                         "ok", written, result.Calls, null, ct);
                 }
-                catch (Exception ex) when (ex is not OperationCanceledException)
+                // Not `ex is not OperationCanceledException`, which was the
+                // first attempt and was exactly wrong: HttpClient.Timeout
+                // throws TaskCanceledException, a subclass of it, so a single
+                // timed-out request escaped and killed the whole run. The
+                // monthly backfill died that way on its first scheduled night
+                // and never completed. What distinguishes a real cancellation
+                // is the token, not the exception type.
+                catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
                     failures++;
                     calls++;
