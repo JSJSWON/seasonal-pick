@@ -68,14 +68,48 @@ Console.CancelKeyPress += (_, e) =>
     Console.WriteLine("중단 요청. 진행 중인 호출을 마치고 멈춥니다.");
 };
 
+// The scheduled run fires minutes after the laptop wakes, so PostgreSQL may
+// not be listening yet. Waiting beats dying: a run that gives up here has
+// written nothing, and the next one is a day away.
+if (!await database.WaitUntilReadyAsync(TimeSpan.FromSeconds(30), cancellation.Token))
+{
+    Console.Error.WriteLine("데이터베이스에 연결할 수 없습니다. 30초 기다렸지만 응답이 없습니다.");
+    return 2;
+}
+
 var startedAt = DateTime.Now;
-var summary = await job.RunAsync(
-    options.Job, from, to, options.TargetId, options.RegionCode, cancellation.Token);
+RunSummary summary;
+try
+{
+    summary = await job.RunAsync(
+        options.Job, from, to, options.TargetId, options.RegionCode, cancellation.Token);
+}
+catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+{
+    Console.WriteLine("중단되었습니다.");
+    return 130;
+}
+catch (Exception ex)
+{
+    // What reaches here failed before collection began - reading the target
+    // list or the calls spent today. A failure once the loop is running is
+    // handled inside RunAsync, which returns the partial summary instead of
+    // throwing. So there is nothing to summarise here; what matters is that
+    // the log file says why in one line instead of a stack trace nobody reads.
+    Console.Error.WriteLine($"수집을 시작하지 못했습니다: {ex.GetType().Name}: {ex.Message}");
+    return 2;
+}
+
 var elapsed = DateTime.Now - startedAt;
 
 Console.WriteLine();
 Console.WriteLine($"조합 {summary.Pairs}  행 {summary.RowsWritten:N0}  호출 {summary.Calls}  "
                   + $"실패 {summary.Failures}  소요 {elapsed:hh\\:mm\\:ss}");
+
+if (summary.Aborted)
+{
+    return 2;
+}
 
 return summary.Failures > 0 || summary.StoppedOnQuota ? 1 : 0;
 

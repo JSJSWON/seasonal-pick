@@ -144,7 +144,7 @@ public sealed class AtApiClient
 
                 return parsed?.Response?.Body;
             }
-            catch (Exception ex) when (attempt < MaxAttempts && IsTransient(ex))
+            catch (Exception ex) when (attempt < MaxAttempts && IsTransient(ex, ct))
             {
                 await Task.Delay(TimeSpan.FromSeconds(2 * attempt), ct);
             }
@@ -155,9 +155,15 @@ public sealed class AtApiClient
     /// Whether a failure is worth retrying. A malformed response is included
     /// because a truncated body produces a JSON error rather than an HTTP one.
     /// </summary>
-    private static bool IsTransient(Exception ex) =>
-        ex is HttpRequestException or JsonException
-        || (ex is TaskCanceledException or OperationCanceledException);
+    /// <remarks>
+    /// A request that timed out and a run the user cancelled both surface as
+    /// TaskCanceledException, so the token is what tells them apart. Without
+    /// that check a Ctrl+C would be retried four times before giving up.
+    /// </remarks>
+    private static bool IsTransient(Exception ex, CancellationToken ct) =>
+        !ct.IsCancellationRequested
+        && ex is HttpRequestException or JsonException
+               or TaskCanceledException or OperationCanceledException;
 
     /// <summary>Builds one request URL, escaping the cond[...] keys.</summary>
     private string BuildUrl(TargetCodes target, string regionCode, DateOnly from, DateOnly to, int page)
